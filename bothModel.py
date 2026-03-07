@@ -2,6 +2,7 @@ import cv2
 import torch
 import numpy as np
 import ssl
+import time
 from ultralytics import YOLO
 
 # Fix for SSL: CERTIFICATE_VERIFY_FAILED error in PyTorch Hub downloads
@@ -58,6 +59,11 @@ def main():
 
     print("Starting webcam... Press 'q' to quit the application.")
 
+    danger_start_time = None
+    obstacle_printed = False
+    class_first_seen = {}  # class_name -> first_seen_time
+    class_printed = set()  # classes already printed for current streak
+
     while cap.isOpened():
         success, frame = cap.read()
         
@@ -107,7 +113,19 @@ def main():
             danger = True
         else:
             danger = False
-        
+
+        # Print OBSTACLE if danger is continuous for 1 second (once per danger episode)
+        if danger:
+            if danger_start_time is None:
+                danger_start_time = time.time()
+            elif not obstacle_printed and time.time() - danger_start_time >= 0.75:
+                cv2.putText(output_color, "OBSTACLE", (w//4, h//2), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+                obstacle_printed = True
+        else:
+            danger_start_time = None
+            obstacle_printed = False
+
         # 5. Visual Feedback
         # Draw the rectangle on the original frame (Green if clear, Red if blocked)
         box_color = (0, 255, 0) # Green
@@ -160,15 +178,17 @@ def main():
         # Iterate through the detections
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
-            
+            detected_classes = set()
+
             # Draw segmentation masks if they exist
             if results[0].masks is not None:
                 annotated_frame = results[0].plot(boxes=False, labels=False)
-            
+
             for i, box in enumerate(boxes):
                 # 1. Get Class Name
                 cls_id = int(box.cls[0].item())
                 class_name = yolo_model.names[cls_id]
+                detected_classes.add(class_name)
 
                 # 2. Get Bounding Box Coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
@@ -204,6 +224,26 @@ def main():
                     
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # Print class name if instance in frame for > 0.5 seconds (once per streak)
+            for cls in detected_classes:
+                if cls not in class_first_seen:
+                    class_first_seen[cls] = time.time()
+                elif cls not in class_printed and time.time() - class_first_seen[cls] >= 0.75:
+                    print(cls)
+                    class_printed.add(cls)
+            # Draw confirmed class names on the depth view (output_color)
+            y_offset = 30
+            for cls in (class_printed & detected_classes):
+                cv2.putText(output_color, cls, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                y_offset += 30
+            for cls in list(class_first_seen.keys()):
+                if cls not in detected_classes:
+                    del class_first_seen[cls]
+                    class_printed.discard(cls)
+        else:
+            class_first_seen.clear()
+            class_printed.clear()
 
         # --- Display the results ---
         # Combine the two frames horizontally into a single window
