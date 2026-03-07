@@ -1,1 +1,1 @@
-# WalkAssit
+# WalkAssist
