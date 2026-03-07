@@ -103,23 +103,52 @@ def main():
 
         _, obstacle_mask = cv2.threshold(danger_zone, min_val + 0.8 * range_val, 255, cv2.THRESH_BINARY)
         obstacle_pixel_count = np.count_nonzero(obstacle_mask)
-        if obstacle_pixel_count > 0.1 * danger_zone.size:
+        if obstacle_pixel_count > 0.1 * danger_zone.size and max_val >= 30:
             danger = True
         else:
             danger = False
         
-
         # 5. Visual Feedback
         # Draw the rectangle on the original frame (Green if clear, Red if blocked)
         box_color = (0, 255, 0) # Green
         if danger: # If more than 10% of the box is blocked
             box_color = (0, 0, 255) # Red
-            cv2.putText(frame, "!!! OBSTACLE !!!", (w//4, h//2), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+
+            # Additionally, draw a square around the obstacle region within the danger zone
+            ys, xs = np.where(obstacle_mask > 0)
+            if xs.size > 0 and ys.size > 0:
+                # Bounding box in danger_zone coordinates
+                local_x1, local_x2 = int(xs.min()), int(xs.max())
+                local_y1, local_y2 = int(ys.min()), int(ys.max())
+
+                # Convert to full-frame coordinates
+                x1_full = zone_left + local_x1
+                x2_full = zone_left + local_x2
+                y1_full = zone_top + local_y1
+                y2_full = zone_top + local_y2
+
+                # Make the box roughly square with a small padding
+                width = x2_full - x1_full
+                height = y2_full - y1_full
+                half_side = int(max(width, height) / 2)
+                half_side = int(half_side * 1.1)  # small padding
+
+                cx = (x1_full + x2_full) // 2
+                cy = (y1_full + y2_full) // 2
+
+                sq_x1 = max(0, cx - half_side)
+                sq_y1 = max(0, cy - half_side)
+                sq_x2 = min(w - 1, cx + half_side)
+                sq_y2 = min(h - 1, cy + half_side)
+
+                # Draw the generalized obstacle square in yellow
+                cv2.rectangle(output_color, (sq_x1, sq_y1), (sq_x2, sq_y2), (0, 255, 255), 2)
+            # cv2.putText(frame, str(avg_gradient), (w//4, h//2), 
+            #             cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
             # Optional: Add audio alert
             # import os; os.system('say "Object" &')
 
-        cv2.rectangle(frame, (zone_left, zone_top), (zone_right, zone_bottom), box_color, 3)
+        cv2.rectangle(output_color, (zone_left, zone_top), (zone_right, zone_bottom), box_color, 3)
 
         # --- YOLO26 Segmentation & Classification ---
         # Run YOLO inference
@@ -151,7 +180,7 @@ def main():
                 x2, y2 = min(w, x2), min(h, y2)
 
                 # Extract the depth region for this object
-                depth_region = output[y1:y2, x1:x2]
+                depth_region = output_norm[y1:y2, x1:x2]
                 
                 if depth_region.size > 0:
                     # MiDaS outputs relative inverse depth. 
