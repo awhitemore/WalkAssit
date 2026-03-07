@@ -9,22 +9,22 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 def main():
     # 1. Load the MiDaS model (MiDaS_small is best for real-time webcam use)
-    model_type = "MiDaS_small"
+    # Use the high-accuracy model
+    model_type = "DPT_Hybrid" 
     midas = torch.hub.load("intel-isl/MiDaS", model_type)
-    
-    # Move model to appropriate device (GPU, MPS for Mac, or CPU)
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
+
+    # Move to Mac GPU (MPS) for speed
+    if torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+
     midas.to(device)
     midas.eval()
-    
-    # Load transforms to resize and normalize the image
+
+    # Use the DPT transform for the Large model
     midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
-    transform = midas_transforms.small_transform if model_type == "MiDaS_small" else midas_transforms.dpt_transform
+    transform = midas_transforms.dpt_transform
 
     # 2. Load the lightest YOLO26 segmentation model (nano)
     try:
@@ -35,7 +35,7 @@ def main():
 
     # Define urban environment classes (COCO dataset indices)
     # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck, 9: traffic light, 10: fire hydrant, 11: stop sign, 12: street sign, 13: bench
-    urban_classes = [0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13]
+    urban_classes = [0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 15, 16]
 
     # 3. Open Webcam
     # `1` (or higher) is usually the iPhone Continuity Camera if connected/enabled.
@@ -84,6 +84,42 @@ def main():
         output = prediction.cpu().numpy()
         output_norm = cv2.normalize(output, None, 0, 255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
         output_color = cv2.applyColorMap(output_norm, cv2.COLORMAP_MAGMA)
+
+        # --- OBSTACLE DETECTION LOGIC ---
+        h, w = output_norm.shape
+
+        # 1. Define the "Danger Zone" (The central column of the screen)
+        # Looking from slightly above the center (h*0.4) to just above your feet (h*0.85)
+        zone_top, zone_bottom = 0, int(h * 0.7)
+        zone_left, zone_right = int(w * 0.3), int(w * 0.7)
+
+        # 2. Extract the data from this zone
+        danger_zone = output_norm[zone_top:zone_bottom, zone_left:zone_right]
+        max_val = np.max(danger_zone)
+        min_val = np.min(danger_zone)
+        range_val = max_val - min_val
+        print(f"Min: {min_val}, Max: {max_val}, Range: {range_val}")
+
+
+        _, obstacle_mask = cv2.threshold(danger_zone, min_val + 0.8 * range_val, 255, cv2.THRESH_BINARY)
+        obstacle_pixel_count = np.count_nonzero(obstacle_mask)
+        if obstacle_pixel_count > 0.1 * danger_zone.size:
+            danger = True
+        else:
+            danger = False
+        
+
+        # 5. Visual Feedback
+        # Draw the rectangle on the original frame (Green if clear, Red if blocked)
+        box_color = (0, 255, 0) # Green
+        if danger: # If more than 10% of the box is blocked
+            box_color = (0, 0, 255) # Red
+            cv2.putText(frame, "!!! OBSTACLE !!!", (w//4, h//2), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+            # Optional: Add audio alert
+            # import os; os.system('say "Object" &')
+
+        cv2.rectangle(frame, (zone_left, zone_top), (zone_right, zone_bottom), box_color, 3)
 
         # --- YOLO26 Segmentation & Classification ---
         # Run YOLO inference
@@ -152,6 +188,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
