@@ -59,33 +59,46 @@ function DepthView() {
         return false;
     };
 
-    // Query Gemini for an exasperated, unique announcement
-    const getExasperatedAnnouncement = async (positions, types) => {
-        // Format positions and types together
-        const descriptions = positions.map((pos, i) => {
-            const type = types[i] || types[0] || 'obstacle';
-            const displayPos = pos === 'ahead' ? 'ahead' : `on the ${pos}`;
-            return `${type} ${displayPos}`;
-        });
-        const objectList = descriptions.join(' and ');
-        const prompt = `You are a sarcastic, slightly exasperated AI assistant helping a blind person navigate. Generate a SHORT (max 20 words), witty announcement about: ${objectList}. Be helpful but with personality - maybe tired, dramatic, or playfully annoyed. MUST include ALL positions (${positions.join('/')}) mentioned. Just the announcement, no quotes.`;
+    // Hardcoded exasperated alerts (no API needed)
+    const exasperatedAlerts = [
+        (dir, obj) => `Oh great, there's a ${obj} ${dir}. Why is everything always in the way?`,
+        (dir, obj) => `Seriously? You're about to walk into a ${obj} ${dir}. Watch it!`,
+        (dir, obj) => `Move! There's a ${obj} ${dir}. Can we just have one clear path?`,
+        (dir, obj) => `Ugh, again? Look out for the ${obj} ${dir}. People leave stuff everywhere.`,
+        (dir, obj) => `I'm begging you to avoid the ${obj} ${dir}. This is getting ridiculous.`,
+        (dir, obj) => `Unbelievable. A ${obj} ${dir}. Do I really have to tell you every time?`,
+        (dir, obj) => `For the love of... there's a ${obj} ${dir}. Please steer around it.`,
+        (dir, obj) => `Can you listen? There's a ${obj} ${dir}. My circuits are frying.`,
+        (dir, obj) => `Watch your step! A ${obj} ${dir}. Why is navigating so hard today?`,
+        (dir, obj) => `Really? A ${obj} ${dir}. I'm exhausted from watching out for you.`,
+        (dir, obj) => `Sigh. There's a ${obj} ${dir}. Can we find a clear path for once?`,
+        (dir, obj) => `Hey, pay attention! A ${obj} ${dir}. I can't do this all day.`,
+        (dir, obj) => `Great, just great. A ${obj} ${dir}. The whole world is against us.`,
+        (dir, obj) => `Avoid ${dir}! There's a ${obj} there. Why is there junk everywhere?`,
+        (dir, obj) => `Move it! A ${obj} ${dir}. I'm tired of saving your shins.`
+    ];
 
-        try {
-            const response = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: prompt }] }]
-                    })
-                }
-            );
-            const data = await response.json();
-            return data.candidates?.[0]?.content?.parts?.[0]?.text || objectList;
-        } catch (error) {
-            console.error('Gemini API error:', error);
-            return objectList;
+    // Get exasperated announcement using hardcoded alerts
+    const getExasperatedAnnouncement = (positions, types) => {
+        // Format direction text
+        const formatDir = (pos) => pos === 'ahead' ? 'ahead' : `on the ${pos}`;
+
+        // Pick a random alert
+        const alertFn = exasperatedAlerts[Math.floor(Math.random() * exasperatedAlerts.length)];
+
+        if (positions.length === 1) {
+            // Single detection
+            const dir = formatDir(positions[0]);
+            const obj = types[0] || 'obstacle';
+            return alertFn(dir, obj);
+        } else {
+            // Multiple detections - combine them
+            const descriptions = positions.map((pos, i) => {
+                const obj = types[i] || types[0] || 'obstacle';
+                return `${obj} ${formatDir(pos)}`;
+            });
+            const combined = descriptions.join(' and ');
+            return `Watch out! There's a ${combined}. This is chaos!`;
         }
     };
 
@@ -164,13 +177,10 @@ function DepthView() {
                     lastAnnouncedTime.current = currentTime;
                     lastAnnouncedState.current = currentState;
 
-                    try {
-                        const announcement = await getExasperatedAnnouncement(currentPositions, currentTypes);
-                        console.log('Gemini announcement:', announcement);
-                        playAudio('charlie', announcement);
-                    } finally {
-                        isAnnouncing.current = false;
-                    }
+                    const announcement = getExasperatedAnnouncement(currentPositions, currentTypes);
+                    console.log('Announcement:', announcement);
+                    playAudio('charlie', announcement);
+                    isAnnouncing.current = false;
                 }
 
                 // Accumulate logs - append new logs to existing ones (avoid duplicates by timestamp)
