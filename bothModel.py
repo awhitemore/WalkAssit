@@ -121,10 +121,13 @@ def main():
         # --- OBSTACLE DETECTION LOGIC ---
         h, w = output_norm.shape
 
-        # 1. Define the "Danger Zone" (The central column of the screen)
-        # Looking from slightly above the center (h*0.4) to just above your feet (h*0.85)
+        # 1. Define the "Danger Zone" (obstacle detection - central column)
         zone_top, zone_bottom = 0, int(h * 0.7)
         zone_left, zone_right = int(w * 0.3), int(w * 0.7)
+
+        # YOLO detection zone (separate - adjust these to change what YOLO sees)
+        yolo_zone_top, yolo_zone_bottom = int(h * 0.1), int(h * 0.9)
+        yolo_zone_left, yolo_zone_right = int(w * 0.1), int(w * 0.9)
 
         # 2. Extract the data from this zone
         danger_zone = output_norm[zone_top:zone_bottom, zone_left:zone_right]
@@ -206,20 +209,22 @@ def main():
         cv2.rectangle(output_color, (zone_left, zone_top), (zone_right, zone_bottom), box_color, 3)
 
         # --- YOLO26 Segmentation & Classification ---
-        # Run YOLO inference
-        results = yolo_model.predict(source=frame, conf=0.45, classes=urban_classes, imgsz=320, show=False)
-        
-        # We start with the original frame instead of the pre-annotated one so we can customize the text
-        annotated_frame = frame.copy()
+        zone_frame = frame[yolo_zone_top:yolo_zone_bottom, yolo_zone_left:yolo_zone_right]
+        results = yolo_model.predict(source=zone_frame, conf=0.45, classes=urban_classes, imgsz=320, show=False)
 
-        # Iterate through the detections
+        annotated_frame = frame.copy()
+        # Draw YOLO zone boundary on YOLO view
+        cv2.rectangle(annotated_frame, (yolo_zone_left, yolo_zone_top), (yolo_zone_right, yolo_zone_bottom), (100, 100, 100), 2)
+
+        # Iterate through the detections (coordinates are in zone_frame space)
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
             detected_classes = set()
 
-            # Draw segmentation masks if they exist
+            # Draw segmentation masks if they exist (paste annotated zone back onto full frame)
             if results[0].masks is not None:
-                annotated_frame = results[0].plot(boxes=False, labels=False)
+                annotated_zone = results[0].plot(boxes=False, labels=False)
+                annotated_frame[yolo_zone_top:yolo_zone_bottom, yolo_zone_left:yolo_zone_right] = annotated_zone
 
             for i, box in enumerate(boxes):
                 # 1. Get Class Name
@@ -227,17 +232,17 @@ def main():
                 class_name = yolo_model.names[cls_id]
                 detected_classes.add(class_name)
 
-                # 2. Get Bounding Box Coordinates
+                # 2. Get Bounding Box Coordinates (in zone_frame space)
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
-                # 3. Calculate Average Depth within the Bounding Box
-                # Ensure coordinates are within image bounds
-                h, w = output.shape
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w, x2), min(h, y2)
+                # Convert to full-frame coordinates for drawing and depth lookup
+                x1_full = max(0, yolo_zone_left + x1)
+                y1_full = max(0, yolo_zone_top + y1)
+                x2_full = min(output.shape[1], yolo_zone_left + x2)
+                y2_full = min(output.shape[0], yolo_zone_top + y2)
 
-                # Extract the depth region for this object
-                depth_region = output_norm[y1:y2, x1:x2]
+                # 3. Calculate Average Depth within the Bounding Box (use full-frame coords)
+                depth_region = output_norm[y1_full:y2_full, x1_full:x2_full]
                 
                 if depth_region.size > 0:
                     # MiDaS outputs relative inverse depth. 
@@ -249,18 +254,18 @@ def main():
                     # Scale for readability (arbitrary scaling factor for display purposes)
                     display_distance = pseudo_distance * 1000
 
-                    # 4. Draw Custom Label (Class + Distance)
+                    # 4. Draw Custom Label (Class + Distance) - use full-frame coords
                     label = f"{class_name}: {display_distance:.1f} units"
                     
                     # Draw text background
                     (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(annotated_frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 0, 0), cv2.FILLED)
+                    cv2.rectangle(annotated_frame, (x1_full, y1_full - text_height - 10), (x1_full + text_width, y1_full), (0, 0, 0), cv2.FILLED)
                     
                     # Draw text
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    cv2.putText(annotated_frame, label, (x1_full, y1_full - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                     
                     # Draw bounding box
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.rectangle(annotated_frame, (x1_full, y1_full), (x2_full, y2_full), (0, 255, 0), 2)
 
             # Print class name if instance in frame for > 0.75 seconds (once per streak)
             for cls in detected_classes:
