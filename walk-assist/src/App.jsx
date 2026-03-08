@@ -1,42 +1,34 @@
 import './App.css'
+import playAudio from './audio'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 
-const playAudio = async (voice, text) => {
-  const voiceIds = {
-    'john': 'JBFqnCBsd6RMkjVDRZzb',
-    'rachel': '21m00Tcm4TlvDq8ikWAM',
-    'ai-adam': 'pNInz6obpgDQGcFmaJgB',
-    'alice': 'Xb7hH8MSUJpSbSDYk0k2',
-    'charlie': 'IKne3meq5aSn9XLyUdCD'
-  }
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceIds[voice]}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'xi-api-key': import.meta.env.VITE_ELEVENLABS_API_KEY,
-    },
-    body: JSON.stringify({
-      text: text,
-      model_id: 'eleven_multilingual_v2',
-    }),
-  });
 
-  const audioBlob = await response.blob();
-  const audioUrl = URL.createObjectURL(audioBlob);
-  const audio = new Audio(audioUrl);
-  audio.play();
-};
 function App() {
+  const [started, setStarted] = useState(false);
+  const navigate = useNavigate();
+
+  const handleStart = () => {
+    if (started) return;
+    setStarted(true);
+    playAudio('charlie', 'Welcome to Walk Assist! I am Charlie, your virtual walking companion. I will help you stay safe as you navigate the world. Object detection is enabled. I will help you avoid obstacles and stay on the path. Good luck!');
+  };
+
+  useEffect(() => {
+    if (started) {
+      const timer = setTimeout(() => {
+        navigate('/depth');
+      }, 17000);
+      return () => clearTimeout(timer);
+    }
+  }, [started, navigate]);
 
   return (
-    <>
+    <div onClick={handleStart} style={{ minHeight: '100vh', cursor: started ? 'default' : 'pointer' }}>
       <img src="/walk-assist.png" alt="Walk Assist" height={100} />
       <h1>Walk Assist</h1>
-      <div className="card">
-        <button onClick={() => playAudio('charlie', 'Hello, how are you doing today?')}>
-          Play Audio
-        </button>
-      </div>
-    </>
+      {!started && <p style={{ opacity: 0.6 }}>Tap anywhere to start</p>}
+    </div>
   )
 }
 

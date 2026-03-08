@@ -2,10 +2,21 @@ import cv2
 import torch
 import numpy as np
 import ssl
+import time
+import requests
 from ultralytics import YOLO
 
 # Fix for SSL: CERTIFICATE_VERIFY_FAILED error in PyTorch Hub downloads
 ssl._create_default_https_context = ssl._create_unverified_context
+
+LOG_SERVER_URL = "http://localhost:5001/logs"
+
+def send_log(message, log_type="info"):
+    """Send a log message to the server"""
+    try:
+        requests.post(LOG_SERVER_URL, json={"message": message, "type": log_type}, timeout=1)
+    except:
+        pass  # Silently fail if server not available
 
 def main():
     # 1. Load the MiDaS model (MiDaS_small is best for real-time webcam use)
@@ -50,6 +61,7 @@ def main():
         cap = cv2.VideoCapture(camera_index)
 
     if not cap.isOpened():
+        send_log("Error: Could not open camera", "error")
         print("Error: Could not open the webcam.")
         return
 
@@ -57,6 +69,10 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     print("Starting webcam... Press 'q' to quit the application.")
+
+    cv2.namedWindow("WalkAssist: YOLO26 Segmentation (Left) + MiDaS Depth (Right)", cv2.WINDOW_NORMAL)
+
+    last_log_time = 0
 
     while cap.isOpened():
         success, frame = cap.read()
@@ -66,6 +82,8 @@ def main():
             print("Waiting for stream...")
             cv2.waitKey(100) 
             continue
+
+        current_time = time.time()
 
         # --- MiDaS Depth Estimation ---
         # Convert BGR (OpenCV default) to RGB
@@ -93,6 +111,9 @@ def main():
         annotated_frame = frame.copy()
 
         # Iterate through the detections
+        should_log = current_time - last_log_time >= 1.0
+        detections = []
+        
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
             
@@ -127,6 +148,9 @@ def main():
                     # Scale for readability (arbitrary scaling factor for display purposes)
                     display_distance = pseudo_distance * 1000
 
+                    # Collect detection for logging
+                    detections.append(f"{class_name} at {display_distance:.1f} units")
+
                     # 4. Draw Custom Label (Class + Distance)
                     label = f"{class_name}: {display_distance:.1f} units"
                     
@@ -139,6 +163,13 @@ def main():
                     
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # Log all detections every 1 second
+        if should_log and detections:
+            for det in detections:
+                send_log(f"Detected {det}", "detection")
+                print(f"[LOG] Detected {det}")
+            last_log_time = current_time
 
         # --- Display the results ---
         # Combine the two frames horizontally into a single window
