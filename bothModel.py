@@ -57,7 +57,11 @@ def main():
     # Define urban environment classes (COCO dataset indices)
     # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck, 9: traffic light, 10: fire hydrant, 11: stop sign, 12: street sign, 13: bench
     urban_classes = [0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 15, 16]
+    # Try camera index 1 (iPhone Continuity), fallback to 0 (built-in)
     cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print("Camera 1 not available, trying camera 0...")
+        cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         send_log("Error: Could not open camera", "error")
         print("Error: Could not open the webcam.")
@@ -178,7 +182,7 @@ def main():
                 elif not obstacle_printed and time.time() - danger_start_time >= 0.75:
                     cv2.putText(output_color, "OBSTACLE", (w//4, h//2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
-                    send_log("Detected Obstacle", "detection")
+                    send_log("Detected obstacle on the middle", "detection")
                     obstacle_printed = True
         else:
             danger_start_time = None
@@ -266,7 +270,14 @@ def main():
                 x2_full = min(output.shape[1], yolo_zone_left + x2)
                 y2_full = min(output.shape[0], yolo_zone_top + y2)
                 center_x_full = (x1_full + x2_full) // 2
-                side = "left" if center_x_full < yolo_zone_mid_x else "right"
+                # Determine position: left, middle, or right
+                frame_third = w // 3
+                if center_x_full < frame_third:
+                    side = "left"
+                elif center_x_full > frame_third * 2:
+                    side = "right"
+                else:
+                    side = "middle"
 
                 # 3. Calculate Average Depth within the Bounding Box (use full-frame coords)
                 depth_region = output_norm[y1_full:y2_full, x1_full:x2_full]
@@ -311,7 +322,7 @@ def main():
             y_offset = 30
             for cls in (class_printed & detected_classes):
                 cv2.putText(output_color, cls, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-                send_log(f"Detected {cls}", "detection")
+                # Note: Logs are sent in the detections loop below with position info
                 y_offset += 30
             for cls in list(class_first_seen.keys()):
                 if cls not in detected_classes:
