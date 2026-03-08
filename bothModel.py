@@ -4,11 +4,22 @@ import numpy as np
 import ssl
 import time
 from ultralytics import YOLO
+import argparse
 
 # Fix for SSL: CERTIFICATE_VERIFY_FAILED error in PyTorch Hub downloads
 ssl._create_default_https_context = ssl._create_unverified_context
 
+# Target frame size (matches webcam setting)
+FRAME_WIDTH, FRAME_HEIGHT = 640, 480
+
 def main():
+
+    parser = argparse.ArgumentParser(description="WalkAssist: YOLO26 + MiDaS Inference")
+    parser.add_argument("--input", type=str, help="Path to input video file. If not provided, webcam is used.")
+    parser.add_argument("--output", type=str, help="Path to save the output video (e.g. out.mp4).")
+    args = parser.parse_args()
+
+
     # 1. Load the MiDaS model (MiDaS_small is best for real-time webcam use)
     # Use the high-accuracy model
     model_type = "DPT_Hybrid" 
@@ -38,40 +49,56 @@ def main():
     # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck, 9: traffic light, 10: fire hydrant, 11: stop sign, 12: street sign, 13: bench
     urban_classes = [0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 15, 16]
 
-    # 3. Open Webcam
-    # `1` (or higher) is usually the iPhone Continuity Camera if connected/enabled.
-    # `0` represents the default built-in Mac webcam.
-    camera_index = 1
-    cap = cv2.VideoCapture(camera_index)
-
-    if not cap.isOpened() or not cap.read()[0]:
-        print(f"Warning: Could not open camera at index {camera_index}. Falling back to index 0.")
-        cap.release()
-        camera_index = 0
+    # 3. Open video source (file or webcam)
+    video_mode = args.input is not None
+    if video_mode:
+        cap = cv2.VideoCapture(args.input)
+        if not cap.isOpened():
+            print(f"Error: Could not open video file: {args.input}")
+            return
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"Processing video: {args.input} ({total_frames} frames @ {fps:.1f} fps)")
+    else:
+        camera_index = 1
         cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened() or not cap.read()[0]:
+            print(f"Warning: Could not open camera at index {camera_index}. Falling back to index 0.")
+            cap.release()
+            camera_index = 0
+            cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            print("Error: Could not open the webcam.")
+            return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        fps = 30.0
+        print("Starting webcam... Press 'q' to quit the application.")
 
-    if not cap.isOpened():
-        print("Error: Could not open the webcam.")
-        return
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-    print("Starting webcam... Press 'q' to quit the application.")
+    out_writer = None
 
     danger_start_time = None
+    danger_start_frame = None
     obstacle_printed = False
-    class_first_seen = {}  # class_name -> first_seen_time
+    class_first_seen = {}  # class_name -> first_seen_time (or frame idx in video mode)
     class_printed = set()  # classes already printed for current streak
+    frame_idx = 0
 
     while cap.isOpened():
         success, frame = cap.read()
         
-        # If the frame is empty, don't crash! Just wait a millisecond and try again.
         if not success:
+            if video_mode:
+                break  # End of video
             print("Waiting for stream...")
-            cv2.waitKey(100) 
+            cv2.waitKey(100)
             continue
+
+        frame_idx += 1
+
+        # Resize video frames to match webcam size (640x480)
+        if video_mode:
+            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
 
         # --- MiDaS Depth Estimation ---
         # Convert BGR (OpenCV default) to RGB
@@ -104,7 +131,8 @@ def main():
         max_val = np.max(danger_zone)
         min_val = np.min(danger_zone)
         range_val = max_val - min_val
-        print(f"Min: {min_val}, Max: {max_val}, Range: {range_val}")
+        if not video_mode:
+            print(f"Min: {min_val}, Max: {max_val}, Range: {range_val}")
 
 
         _, obstacle_mask = cv2.threshold(danger_zone, min_val + 0.8 * range_val, 255, cv2.THRESH_BINARY)
@@ -114,16 +142,25 @@ def main():
         else:
             danger = False
 
-        # Print OBSTACLE if danger is continuous for 1 second (once per danger episode)
+        # Print OBSTACLE if danger is continuous for 0.75 seconds (once per danger episode)
         if danger:
-            if danger_start_time is None:
-                danger_start_time = time.time()
-            elif not obstacle_printed and time.time() - danger_start_time >= 0.75:
-                cv2.putText(output_color, "OBSTACLE", (w//4, h//2), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
-                obstacle_printed = True
+            if video_mode:
+                if danger_start_frame is None:
+                    danger_start_frame = frame_idx
+                elif not obstacle_printed and (frame_idx - danger_start_frame) / fps >= 0.75:
+                    cv2.putText(output_color, "OBSTACLE", (w//4, h//2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+                    obstacle_printed = True
+            else:
+                if danger_start_time is None:
+                    danger_start_time = time.time()
+                elif not obstacle_printed and time.time() - danger_start_time >= 0.75:
+                    cv2.putText(output_color, "OBSTACLE", (w//4, h//2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+                    obstacle_printed = True
         else:
             danger_start_time = None
+            danger_start_frame = None
             obstacle_printed = False
 
         # 5. Visual Feedback
@@ -225,13 +262,16 @@ def main():
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # Print class name if instance in frame for > 0.5 seconds (once per streak)
+            # Print class name if instance in frame for > 0.75 seconds (once per streak)
             for cls in detected_classes:
                 if cls not in class_first_seen:
-                    class_first_seen[cls] = time.time()
-                elif cls not in class_printed and time.time() - class_first_seen[cls] >= 0.75:
-                    print(cls)
-                    class_printed.add(cls)
+                    class_first_seen[cls] = frame_idx if video_mode else time.time()
+                elif cls not in class_printed:
+                    elapsed = (frame_idx - class_first_seen[cls]) / fps if video_mode else time.time() - class_first_seen[cls]
+                    if elapsed >= 0.75:
+                        if not video_mode:
+                            print(cls)
+                        class_printed.add(cls)
             # Draw confirmed class names on the depth view (output_color)
             y_offset = 30
             for cls in (class_printed & detected_classes):
@@ -245,17 +285,31 @@ def main():
             class_first_seen.clear()
             class_printed.clear()
 
-        # --- Display the results ---
-        # Combine the two frames horizontally into a single window
-        # Both should be the same size (640x480)
+        # --- Display and save results ---
         combined_frame = np.hstack((annotated_frame, output_color))
 
+        # Initialize VideoWriter on first frame
+        if args.output and out_writer is None:
+            out_h, out_w = combined_frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out_writer = cv2.VideoWriter(args.output, fourcc, fps, (out_w, out_h))
+            print(f"Saving output to: {args.output}")
+
+        if out_writer is not None:
+            out_writer.write(combined_frame)
+
         cv2.imshow("WalkAssist: YOLO26 Segmentation (Left) + MiDaS Depth (Right)", combined_frame)
+
+        if video_mode and frame_idx % 30 == 0:
+            print(f"Processed {frame_idx}/{total_frames} frames...")
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
+    if out_writer is not None:
+        out_writer.release()
+        print(f"Saved demo video to: {args.output}")
     cv2.destroyAllWindows()
 
 
