@@ -57,7 +57,7 @@ def main():
     # Define urban environment classes (COCO dataset indices)
     # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck, 9: traffic light, 10: fire hydrant, 11: stop sign, 12: street sign, 13: bench
     urban_classes = [0, 1, 2, 3, 5, 7, 9, 10, 11, 12, 13, 15, 16]
-
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         send_log("Error: Could not open camera", "error")
         print("Error: Could not open the webcam.")
@@ -178,6 +178,7 @@ def main():
                 elif not obstacle_printed and time.time() - danger_start_time >= 0.75:
                     cv2.putText(output_color, "OBSTACLE", (w//4, h//2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+                    send_log("Detected Obstacle", "detection")
                     obstacle_printed = True
         else:
             danger_start_time = None
@@ -227,12 +228,14 @@ def main():
         cv2.rectangle(output_color, (zone_left, zone_top), (zone_right, zone_bottom), box_color, 3)
 
         # --- YOLO26 Segmentation & Classification ---
+        yolo_zone_mid_x = (yolo_zone_left + yolo_zone_right) // 2  # split zone into left/right
         zone_frame = frame[yolo_zone_top:yolo_zone_bottom, yolo_zone_left:yolo_zone_right]
         results = yolo_model.predict(source=zone_frame, conf=0.45, classes=urban_classes, imgsz=320, show=False)
 
         annotated_frame = frame.copy()
-        # Draw YOLO zone boundary on YOLO view
+        # Draw YOLO zone boundary and left/right split line
         cv2.rectangle(annotated_frame, (yolo_zone_left, yolo_zone_top), (yolo_zone_right, yolo_zone_bottom), (100, 100, 100), 2)
+        cv2.line(annotated_frame, (yolo_zone_mid_x, yolo_zone_top), (yolo_zone_mid_x, yolo_zone_bottom), (120, 120, 120), 1)
 
         # Iterate through the detections
         should_log = current_time - last_log_time >= 1.0
@@ -262,6 +265,8 @@ def main():
                 y1_full = max(0, yolo_zone_top + y1)
                 x2_full = min(output.shape[1], yolo_zone_left + x2)
                 y2_full = min(output.shape[0], yolo_zone_top + y2)
+                center_x_full = (x1_full + x2_full) // 2
+                side = "left" if center_x_full < yolo_zone_mid_x else "right"
 
                 # 3. Calculate Average Depth within the Bounding Box (use full-frame coords)
                 depth_region = output_norm[y1_full:y2_full, x1_full:x2_full]
@@ -276,12 +281,11 @@ def main():
                     # Scale for readability (arbitrary scaling factor for display purposes)
                     display_distance = pseudo_distance * 1000
 
-                    # Collect detection for logging
-                    detections.append(f"{class_name} at {display_distance:.1f} units")
+                    # Collect detection for logging (include left/right)
+                    detections.append(f"{class_name} on the {side}")
 
-                    # 4. Draw Custom Label (Class + Distance)
-                    # 4. Draw Custom Label (Class + Distance) - use full-frame coords
-                    label = f"{class_name}: {display_distance:.1f} units"
+                    # 4. Draw Custom Label (Class + Distance + side)
+                    label = f"{class_name} ({side}): {display_distance:.1f} units"
                     
                     # Draw text background
                     (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
@@ -307,6 +311,7 @@ def main():
             y_offset = 30
             for cls in (class_printed & detected_classes):
                 cv2.putText(output_color, cls, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                send_log(f"Detected {cls}", "detection")
                 y_offset += 30
             for cls in list(class_first_seen.keys()):
                 if cls not in detected_classes:
@@ -316,7 +321,7 @@ def main():
             class_first_seen.clear()
             class_printed.clear()
 
-        # Log all detections every 1 second
+        # Log all detections every 1 second (message includes left/right)
         if should_log and detections:
             for det in detections:
                 send_log(f"Detected {det}", "detection")
